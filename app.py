@@ -31,7 +31,84 @@ from core.scoring import (
 )
 from core.seasonality import best_timing_summary
 
+import auth
+
 st.set_page_config(page_title="IDX Stock Analyzer Pro", layout="wide")
+
+
+# ================================================================
+# AUTENTIKASI — GERBANG LOGIN ← FITUR BARU
+# ================================================================
+
+def _init_auth_state():
+    st.session_state.setdefault("auth_logged_in", False)
+    st.session_state.setdefault("auth_username", None)
+    st.session_state.setdefault("auth_is_admin", False)
+    st.session_state.setdefault("auth_must_change_password", False)
+
+
+def render_login_form():
+    st.title("🔐 IDX Stock Analyzer Pro")
+    st.caption("Aplikasi ini dibatasi hanya untuk pengguna terdaftar. Hubungi admin untuk mendapatkan akses.")
+    with st.form("login_form"):
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("🔓 Masuk", type="primary", use_container_width=True)
+    if submitted:
+        result = auth.authenticate(u.strip(), p)
+        if result:
+            st.session_state["auth_logged_in"] = True
+            st.session_state["auth_username"] = result["username"]
+            st.session_state["auth_is_admin"] = result["is_admin"]
+            st.session_state["auth_must_change_password"] = result["must_change_password"]
+            st.rerun()
+        else:
+            st.error("❌ Username atau password salah.")
+    st.stop()
+
+
+def render_account_sidebar():
+    with st.sidebar:
+        st.markdown("## 👤 Akun")
+        role = "👑 Admin" if st.session_state["auth_is_admin"] else "Pengguna"
+        st.info(f"Login sebagai **{st.session_state['auth_username']}** ({role})")
+
+        if st.session_state.get("auth_must_change_password"):
+            st.warning(
+                "⚠️ Anda login dengan password default/awal. "
+                "Segera ganti password melalui menu **Ganti Password** di bawah."
+            )
+
+        if st.button("🚪 Logout", use_container_width=True):
+            for k in ["auth_logged_in", "auth_username", "auth_is_admin", "auth_must_change_password"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+        with st.expander("🔑 Ganti Password", expanded=st.session_state.get("auth_must_change_password", False)):
+            with st.form("change_pw_form"):
+                old_pw = st.text_input("Password lama", type="password", key="cp_old")
+                new_pw = st.text_input("Password baru", type="password", key="cp_new")
+                new_pw2 = st.text_input("Ulangi password baru", type="password", key="cp_new2")
+                change_submit = st.form_submit_button("Simpan Password Baru")
+            if change_submit:
+                if new_pw != new_pw2:
+                    st.error("Konfirmasi password baru tidak cocok.")
+                else:
+                    ok, msg = auth.change_own_password(st.session_state["auth_username"], old_pw, new_pw)
+                    if ok:
+                        st.session_state["auth_must_change_password"] = False
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+        st.divider()
+
+
+_init_auth_state()
+if not st.session_state["auth_logged_in"]:
+    render_login_form()
+else:
+    render_account_sidebar()
+
 
 # ================================================================
 # FULL IDX UNIVERSE (representatif, bisa diperluas)
@@ -130,6 +207,8 @@ def analyze_ticker(ticker: str, horizon_label: str):
 
     score = composite_score(horizon_label, t_score, l_score, f_score, m_score, penalty)
     fc = price_range_forecast(current_price, df["Close"], min(horizon_days, len(df) // 3))
+    # best_timing_summary() kini juga mengembalikan worst_weekday/worst_bucket/worst_month
+    # (pola terlemah — harga paling sering jatuh), lihat core/seasonality.py ← FITUR BARU
     timing = best_timing_summary(df["Close"])
 
     top_factors = (pen_factors + t_factors + f_factors + m_factors + l_factors)[:5]
@@ -473,13 +552,19 @@ with st.sidebar:
         "⚠️ Bukan saran investasi."
     )
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+_tab_labels = [
     "🔍 Screening Multi-Saham",
     "📈 Analisis Satu Saham",
     "📉 Backtest Strategi",
     "🌟 Rekomendasi Bullish Harian",
     "🎯 Decision Engine",
-])
+]
+if st.session_state.get("auth_is_admin"):
+    _tab_labels.append("👑 Admin — Kelola Akses")
+
+_tabs = st.tabs(_tab_labels)
+tab1, tab2, tab3, tab4, tab5 = _tabs[:5]
+tab6 = _tabs[5] if st.session_state.get("auth_is_admin") else None
 
 
 # ================================================================
@@ -1018,6 +1103,35 @@ with tab5:
             t2.metric("Bagian Bulan Terkuat", bk_de.get("name", "?"), f"win rate {bk_de.get('win_rate_pct','?')}%")
             t3.metric("Bulan Terkuat", mo_de.get("name", "?"), f"win rate {mo_de.get('win_rate_pct','?')}%")
 
+            # Pola waktu TERLEMAH — Harga Paling Jatuh ← FITUR BARU
+            wd_weak = tw_de.get("worst_weekday", {})
+            bk_weak = tw_de.get("worst_bucket", {})
+            mo_weak = tw_de.get("worst_month", {})
+            st.markdown("#### 📉 Pola Waktu Terlemah (Historis) — Harga Paling Sering Jatuh")
+            tl1, tl2, tl3 = st.columns(3)
+            tl1.metric(
+                "Hari Terlemah", wd_weak.get("name", "?"),
+                f"avg return {wd_weak.get('avg_return_pct','?')}% | win rate {wd_weak.get('win_rate_pct','?')}%",
+                delta_color="inverse",
+            )
+            tl2.metric(
+                "Bagian Bulan Terlemah", bk_weak.get("name", "?"),
+                f"avg return {bk_weak.get('avg_return_pct','?')}% | win rate {bk_weak.get('win_rate_pct','?')}%",
+                delta_color="inverse",
+            )
+            tl3.metric(
+                "Bulan Terlemah", mo_weak.get("name", "?"),
+                f"avg return {mo_weak.get('avg_return_pct','?')}% | win rate {mo_weak.get('win_rate_pct','?')}%",
+                delta_color="inverse",
+            )
+            st.caption(
+                "Pola terlemah = hari/bagian bulan/bulan dengan rata-rata return historis "
+                "TERENDAH (harga secara historis paling sering/paling dalam menurun), dihitung "
+                "dari tabel historis yang sama persis dengan pola terkuat di atas."
+            )
+            if any(not d.get("reliable", True) for d in [wd_weak, bk_weak, mo_weak]):
+                st.caption("⚠️ Sebagian pola di atas berbasis sampel historis tipis — interpretasikan dengan hati-hati.")
+
             # AI Justifikasi
             if use_ai_de:
                 with st.spinner("Menghasilkan justifikasi AI..."):
@@ -1055,3 +1169,77 @@ with tab5:
                 file_name=f"decision_{de_ticker.replace('.','_')}_{datetime.date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
+
+
+# ================================================================
+# TAB 6: ADMIN — KELOLA AKSES ← FITUR BARU (hanya untuk admin)
+# ================================================================
+if tab6 is not None:
+    with tab6:
+        st.subheader("👑 Admin — Kelola Akses Pengguna")
+        st.caption("Tab ini hanya terlihat oleh akun dengan peran Admin.")
+
+        st.markdown("#### 📋 Daftar Pengguna Terdaftar")
+        st.dataframe(pd.DataFrame(auth.list_users()), use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("#### ➕ Tambah Pengguna Baru")
+        with st.form("admin_add_user_form"):
+            au1, au2, au3 = st.columns(3)
+            new_username = au1.text_input("Username baru")
+            new_password = au2.text_input("Password (min. 6 karakter)", type="password")
+            new_is_admin = au3.checkbox("Jadikan Admin?")
+            add_submit = st.form_submit_button("Tambah Pengguna", type="primary")
+        if add_submit:
+            ok, msg = auth.add_user(
+                new_username, new_password, new_is_admin,
+                created_by=st.session_state["auth_username"],
+            )
+            (st.success if ok else st.error)(msg)
+            if ok:
+                st.rerun()
+
+        st.divider()
+        _existing_usernames = [u["Username"] for u in auth.list_users()]
+
+        st.markdown("#### 🔑 Reset Password Pengguna")
+        with st.form("admin_reset_pw_form"):
+            rp1, rp2 = st.columns(2)
+            reset_target = rp1.selectbox("Pilih pengguna", _existing_usernames, key="admin_reset_user")
+            reset_new_pw = rp2.text_input("Password baru", type="password", key="admin_reset_pw")
+            reset_submit = st.form_submit_button("Reset Password")
+        if reset_submit:
+            ok, msg = auth.reset_password(reset_target, reset_new_pw)
+            (st.success if ok else st.error)(msg)
+
+        st.divider()
+        st.markdown("#### 🛡️ Ubah Peran (Admin / Pengguna Biasa)")
+        with st.form("admin_set_role_form"):
+            sr1, sr2 = st.columns(2)
+            role_target = sr1.selectbox("Pilih pengguna", _existing_usernames, key="admin_role_user")
+            role_make_admin = sr2.checkbox("Jadikan Admin", value=True, key="admin_role_checkbox")
+            role_submit = st.form_submit_button("Terapkan Perubahan Peran")
+        if role_submit:
+            ok, msg = auth.set_admin(role_target, role_make_admin)
+            (st.success if ok else st.error)(msg)
+            if ok:
+                st.rerun()
+
+        st.divider()
+        st.markdown("#### 🗑️ Hapus Akses Pengguna")
+        with st.form("admin_delete_user_form"):
+            del_target = st.selectbox("Pilih pengguna yang akan dihapus", _existing_usernames, key="admin_delete_user")
+            del_submit = st.form_submit_button("Hapus Pengguna", type="secondary")
+        if del_submit:
+            ok, msg = auth.delete_user(del_target, requesting_user=st.session_state["auth_username"])
+            (st.success if ok else st.error)(msg)
+            if ok:
+                st.rerun()
+
+        st.divider()
+        st.caption(
+            "⚠️ Data pengguna disimpan di file `users.json` (lokal, di folder yang sama dengan app.py). "
+            "Password disimpan sebagai hash (PBKDF2-SHA256 + salt), bukan plaintext. "
+            "Pada Streamlit Community Cloud, file ini bisa ter-reset saat aplikasi di-redeploy — "
+            "untuk penggunaan jangka panjang pertimbangkan migrasi ke database eksternal."
+        )
