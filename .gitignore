@@ -1,0 +1,11 @@
+# Data pengguna (berisi hash password) — JANGAN pernah di-commit ke repo publik
+users.json
+
+# Streamlit secrets lokal
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
